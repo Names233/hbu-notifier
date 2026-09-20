@@ -1,0 +1,70 @@
+# hbu-notifier 配置。密钥一律用 $环境变量 引用（GitHub Secrets / 本机环境变量），
+# 本文件不含敏感信息，可以公开提交。
+
+[general]
+state_file = "state.json"
+digest_empty = true # 摘要时段没有新通知时也发一条"无新通知"，用于确认程序活着
+
+# ---- 信息源 ----
+# base_url 用于把页面里的相对链接拼成绝对地址
+[sources.jwc_tzgg]
+name = "教务处·通知公告"
+url = "https://jwc.hbu.cn/index/tzgg.htm"
+base_url = "https://jwc.hbu.cn/"
+enabled = true
+
+[sources.jwc_kx]
+name = "教务处·教务快讯"
+url = "https://jwc.hbu.cn/index/jwkx.htm"
+base_url = "https://jwc.hbu.cn/"
+enabled = true
+
+[sources.home_tzgg]
+name = "学校主页·通知公告"
+url = "https://hbu.edu.cn/tzgg.htm"
+base_url = "https://hbu.edu.cn/"
+enabled = true
+
+[sources.home_xw]
+name = "学校主页·河大新闻"
+url = "https://hbu.edu.cn/hdxw.htm"
+base_url = "https://hbu.edu.cn/"
+enabled = true
+
+[sources.home_bksjy]
+name = "教育教学·本科生教育"
+url = "https://hbu.edu.cn/jyjx1/bksjy1.htm"
+base_url = "https://hbu.edu.cn/"
+enabled = true
+
+# ---- 推送渠道（$开头 = 从环境变量读取；未配置的渠道会跳过并告警）----
+[channels.serverchan]
+enabled = true
+sendkey = "$SERVERCHAN_SENDKEY"
+
+[channels.pushplus]
+enabled = true
+token = "$PUSHPLUS_TOKEN"
+
+[channels.smtp]
+enabled = true
+host = "smtp.qq.com"
+port = 465
+user = "$SMTP_USER" # 发件邮箱，如 xxx@qq.com
+password = "$SMTP_PASS" # QQ 邮箱用"授权码"，不是登录密码
+to = "$SMTP_TO" # 收件邮箱，多个用英文逗号分隔
+
+[channels.dingtalk]
+enabled = true
+webhook = "$DINGTALK_WEBHOOK"
+secret = "$DINGTALK_SECRET" # 机器人"加签"密钥，没开加签就让它保持 $VAR（缺了不报错）
+
+[channels.feishu]
+enabled = true
+webhook = "$FEISHU_WEBHOOK"
+secret = "$FEISHU_SECRET"
+
+# ---- 关键词过滤（可选）----
+[filter]
+include_keywords = [] # 非空时：只推标题命中任一关键词的通知
+exclude_keywords = [] # 标题命中任一关键词的不推

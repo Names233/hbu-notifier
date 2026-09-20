@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.venv/
+
+# 注意：state.json 刻意不忽略 —— Actions 依靠提交它来记住已推送过的内容
