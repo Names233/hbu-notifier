@@ -10,6 +10,7 @@ import re
 import smtplib
 import time
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 from email.header import Header
 from email.mime.text import MIMEText
 
@@ -17,6 +18,8 @@ import requests
 
 TIMEOUT = 20
 MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+# 北京时间，无夏令时
+TZ = timezone(timedelta(hours=8))
 
 
 def md_links_to_text(md: str) -> str:
@@ -24,12 +27,65 @@ def md_links_to_text(md: str) -> str:
     return MD_LINK.sub(lambda m: f"{m.group(1)}：{m.group(2)}", md).replace("**", "")
 
 
-def item_markdown(it) -> str:
-    summary = f"**摘要**：{it.summary}  \n\n" if getattr(it, "summary", "") else ""
+def _parse_dt(value: str, end_of_day: bool = False) -> datetime | None:
+    """把 YYYY-MM-DD[ HH:MM] 解析成北京时间 datetime；失败返回 None。"""
+    if not value:
+        return None
+    try:
+        if len(value) > 10:
+            dt = datetime.strptime(value, "%Y-%m-%d %H:%M")
+        else:
+            dt = datetime.strptime(value, "%Y-%m-%d")
+            if end_of_day:  # 只给了日期时，截止按当天 23:59 计
+                dt = dt.replace(hour=23, minute=59)
+        return dt.replace(tzinfo=TZ)
+    except ValueError:
+        return None
+
+
+def _fmt_dt(dt: datetime, now: datetime | None) -> str:
+    """展示日期：同年省略年份，带时间则一并显示。"""
+    same_year = now is None or dt.year == now.year
+    base = f"{dt:%m-%d}" if same_year else f"{dt:%Y-%m-%d}"
+    if dt.hour or dt.minute:
+        base += f" {dt:%H:%M}"
+    return base
+
+
+def _countdown(target: datetime, now: datetime) -> str:
+    """距目标时间的人话倒计时。"""
+    secs = (target - now).total_seconds()
+    if secs < 0:
+        return "已过期"
+    if secs < 3600:
+        return f"还剩 {max(1, int(secs // 60))} 分钟"
+    if secs < 86400:
+        return f"还剩 {int(secs // 3600)} 小时"
+    return f"还剩 {int(secs // 86400)} 天"
+
+
+def timing_lines(it, now: datetime | None = None) -> list[str]:
+    """返回时间相关展示行，如 ['⏰ 截止 09-26 17:00（还剩 2 天）']。"""
+    lines = []
+    now = now or datetime.now(TZ)
+    deadline = _parse_dt(getattr(it, "deadline", ""), end_of_day=True)
+    start = _parse_dt(getattr(it, "start", ""))
+    if start:
+        note = "（已开始）" if start <= now else f"（{_countdown(start, now)}后开始）"
+        lines.append(f"🕐 开始 {_fmt_dt(start, now)}{note}")
+    if deadline:
+        lines.append(f"⏰ 截止 {_fmt_dt(deadline, now)}（{_countdown(deadline, now)}）")
+    return lines
+
+
+def item_markdown(it, now: datetime | None = None) -> str:
+    summary = f"**摘要**：{it.summary}  \n" if getattr(it, "summary", "") else ""
+    timing = "".join(f"**{line}**  \n" for line in timing_lines(it, now))
     return (
         f"**来源**：{it.source}  \n"
         f"**日期**：{it.date or '未知'}  \n\n"
         f"{summary}"
+        f"{timing}\n"
         f"[📖 打开原文]({it.url})"
     )
 

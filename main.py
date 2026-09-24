@@ -135,17 +135,18 @@ def build_summarizer(cfg: dict):
     return s
 
 
-def summarize_items(summarizer, items: list) -> None:
-    """就地给每个 item 填 summary。单条失败只记日志，不影响其他条目。"""
+def analyze_items(summarizer, items: list) -> None:
+    """就地给每个 item 填 summary/start/deadline。单条失败只记日志，不影响其他条目。"""
     if summarizer is None:
         return
     ok = 0
     for it in items:
         try:
             body = scraper.fetch_article_body(it.url)
-            s = summarizer.summarize(it.title, body)
-            if s:
-                it.summary = s
+            if result := summarizer.analyze(it.title, body, it.date):
+                it.summary = result["summary"]
+                it.start = result.get("start", "")
+                it.deadline = result.get("deadline", "")
                 ok += 1
         except Exception as e:
             print(f"[WARN] 摘要失败「{it.title[:20]}…」: {e}")
@@ -188,7 +189,7 @@ def run_check(cfg, state_path: Path, channels, dry_run=False) -> None:
         return
 
     if todo:
-        summarize_items(build_summarizer(cfg), todo)
+        analyze_items(build_summarizer(cfg), todo)
 
     for it in todo:
         state["items"][it.url] = _record(it)
@@ -198,11 +199,15 @@ def run_check(cfg, state_path: Path, channels, dry_run=False) -> None:
         for it in todo:
             extra = f" | 摘要：{it.summary}" if it.summary else ""
             print(f"  - 【{it.source}】{it.title} {it.date}{extra}")
+            for line in notify.timing_lines(it):
+                print(f"      {line}")
         return
 
     for it in todo:
         if it.summary:
             print(f"  摘要：{it.title[:30]} → {it.summary}")
+        for line in notify.timing_lines(it):
+            print(f"  时间：{line}")
         channels_send(channels, f"【{it.source}】{it.title}", notify.item_markdown(it))
     save_state(state_path, state)
 
@@ -217,8 +222,20 @@ def _record(it) -> dict:
         "source": it.source,
         "date": it.date,
         "summary": it.summary,
+        "start": it.start,
+        "deadline": it.deadline,
         "first_seen": now().isoformat(timespec="seconds"),
     }
+
+
+class _DictItem:
+    """把 state.json 里的字典包装成对象，便于复用 notify 里的时间展示逻辑。"""
+
+    def __init__(self, d: dict):
+        self.__dict__.update(d)
+
+    def __getattr__(self, name):  # 缺失字段按空串处理
+        return ""
 
 
 def run_digest(cfg, state_path: Path, channels, dry_run=False) -> None:
@@ -241,8 +258,10 @@ def run_digest(cfg, state_path: Path, channels, dry_run=False) -> None:
             for url, v in missing:
                 try:
                     body = scraper.fetch_article_body(url)
-                    if s := summarizer.summarize(v["title"], body):
-                        v["summary"] = s
+                    if result := summarizer.analyze(v["title"], body, v.get("date", "")):
+                        v["summary"] = result["summary"]
+                        v.setdefault("start", result.get("start", ""))
+                        v.setdefault("deadline", result.get("deadline", ""))
                 except Exception as e:
                     print(f"[WARN] 补摘要失败「{v['title'][:20]}…」: {e}")
 
@@ -258,6 +277,8 @@ def run_digest(cfg, state_path: Path, channels, dry_run=False) -> None:
                 line = f"- [{v['title']}]({url})（{date}）"
                 if v.get("summary"):
                     line += f"\n  {v['summary']}"
+                for tl in notify.timing_lines(_DictItem(v)):
+                    line += f"\n  {tl}"
                 lines.append(line)
             lines.append("")
     elif not cfg.get("general", {}).get("digest_empty", True):

@@ -40,6 +40,8 @@ class Item:
     date: str
     source: str
     summary: str = ""
+    start: str = ""
+    deadline: str = ""
 
 
 def _to_abs(href: str, page_url: str, base_url: str) -> str:
