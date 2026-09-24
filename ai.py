@@ -12,8 +12,9 @@ import time
 import requests
 
 DEFAULT_BASE_URL = "https://freeshare.cc.cd/v1"
-DEFAULT_MODEL = "kimi-k3"
-DEFAULT_FALLBACKS = ["deepseek-v4.1-flash", "glm-5.3-flash"]
+# 顺序按 GitHub Actions（美国网络）实测稳定性排：deepseek 最稳，kimi/glm 常整模型 500/503
+DEFAULT_MODEL = "deepseek-v4.1-flash"
+DEFAULT_FALLBACKS = ["kimi-k3", "glm-5.3-flash"]
 
 
 def _clean(text: str, limit: int) -> str | None:
@@ -73,7 +74,11 @@ class Summarizer:
         return _clean(text, self.max_summary)
 
     def summarize(self, title: str, body: str) -> str | None:
-        """返回一句话摘要；所有模型都失败或结果为空则返回 None（调用方据此降级）。"""
+        """返回一句话摘要；所有模型都失败或结果为空则返回 None（调用方据此降级）。
+
+        只有 429 限流才在同模型内退避重试；其余错误（参数错、上游 5xx、超时）
+        立即换下一个模型——中转站常整模型不可用，死磕一个只会拖慢整体。
+        """
         if not self.ready:
             return None
         body = (body or "").strip()[: self.max_body]
@@ -85,7 +90,16 @@ class Summarizer:
                     if text := self._call(model, title, body):
                         return text
                     print(f"  [AI] {model} 返回空内容，换下一个")
+                    break
+                except requests.HTTPError as e:
+                    code = e.response.status_code if e.response is not None else 0
+                    if code == 429 and attempt + 1 < self.retries:
+                        print(f"  [AI] {model} 限流，退避重试")
+                        time.sleep(3 * (attempt + 1))
+                        continue
+                    print(f"  [AI] {model} HTTP {code}，换模型")
+                    break
                 except Exception as e:
-                    print(f"  [AI] {model} 第{attempt + 1}次失败: {str(e)[:100]}")
-                    time.sleep(2 * (attempt + 1))  # 限流时退避
+                    print(f"  [AI] {model} 失败（{type(e).__name__}），换模型")
+                    break
         return None

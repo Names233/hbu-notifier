@@ -12,8 +12,8 @@ digest_empty = true # 摘要时段没有新通知时也发一条"无新通知"�
 enabled = true
 base_url = "https://freeshare.cc.cd/v1"
 api_key = "$FREESHARE_API_KEY"
-model = "kimi-k3"
-fallback_models = ["glm-5.3-flash", "deepseek-v4.1-flash"]
+model = "deepseek-v4.1-flash" # 实测在 GitHub Actions 上最稳
+fallback_models = ["kimi-k3", "glm-5.3-flash"] # 主模型失败时依次回退
 max_summary = 60 # 摘要字数上限
 
 # ---- 信息源 ----
