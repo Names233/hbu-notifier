@@ -136,7 +136,7 @@ def build_summarizer(cfg: dict):
 
 
 def analyze_items(summarizer, items: list) -> None:
-    """就地给每个 item 填 summary/start/deadline。单条失败只记日志，不影响其他条目。"""
+    """就地给每个 item 填 summary/kind/timings。单条失败只记日志，不影响其他条目。"""
     if summarizer is None:
         return
     ok = 0
@@ -145,8 +145,8 @@ def analyze_items(summarizer, items: list) -> None:
             body = scraper.fetch_article_body(it.url)
             if result := summarizer.analyze(it.title, body, it.date):
                 it.summary = result["summary"]
-                it.start = result.get("start", "")
-                it.deadline = result.get("deadline", "")
+                it.kind = result.get("kind", "")
+                it.timings = result.get("timings", [])
                 ok += 1
         except Exception as e:
             print(f"[WARN] 摘要失败「{it.title[:20]}…」: {e}")
@@ -209,6 +209,11 @@ def run_check(cfg, state_path: Path, channels, dry_run=False) -> None:
         for line in notify.timing_lines(it):
             print(f"  时间：{line}")
         channels_send(channels, f"【{it.source}】{it.title}", notify.item_markdown(it))
+
+    # 临近截止提醒（每条通知的每个截止只提醒一次）
+    if cfg.get("general", {}).get("due_alert", True):
+        send_due_alerts(state, channels, int(cfg.get("general", {}).get("due_alert_hours", 24)))
+
     save_state(state_path, state)
 
     if failed:
@@ -216,14 +221,41 @@ def run_check(cfg, state_path: Path, channels, dry_run=False) -> None:
         channels_send(channels, alert, alert)
 
 
+def send_due_alerts(state: dict, channels, hours: int = 24) -> None:
+    """对 24 小时内到期、且尚未提醒过的催办类时间节点单独推送提醒。
+
+    每条通知的每个截止时间只提醒一次（用 state 里的 alerted 列表去重）。
+    """
+    if not channels:
+        return
+    now_dt = now()
+    sent = 0
+    for url, v in state["items"].items():
+        item = _DictItem(v)
+        soon = notify.due_soon(item, now_dt, hours=hours)
+        if not soon:
+            continue
+        already = set(v.get("alerted") or [])
+        fresh = [t for t in soon if f"{t['type']}:{t['time']}" not in already]
+        if not fresh:
+            continue
+        item.url = url
+        title = f"⏰ 即将截止：{v['title'][:30]}"
+        if channels_send(channels, title, notify.alert_markdown(item, fresh, now_dt)):
+            v["alerted"] = sorted(already | {f"{t['type']}:{t['time']}" for t in fresh})
+            sent += 1
+    if sent:
+        print(f"  已发送 {sent} 条临近截止提醒")
+
+
 def _record(it) -> dict:
     return {
         "title": it.title,
         "source": it.source,
         "date": it.date,
+        "kind": it.kind,
         "summary": it.summary,
-        "start": it.start,
-        "deadline": it.deadline,
+        "timings": it.timings,
         "first_seen": now().isoformat(timespec="seconds"),
     }
 
@@ -260,8 +292,8 @@ def run_digest(cfg, state_path: Path, channels, dry_run=False) -> None:
                     body = scraper.fetch_article_body(url)
                     if result := summarizer.analyze(v["title"], body, v.get("date", "")):
                         v["summary"] = result["summary"]
-                        v.setdefault("start", result.get("start", ""))
-                        v.setdefault("deadline", result.get("deadline", ""))
+                        v.setdefault("kind", result.get("kind", ""))
+                        v.setdefault("timings", result.get("timings", []))
                 except Exception as e:
                     print(f"[WARN] 补摘要失败「{v['title'][:20]}…」: {e}")
 

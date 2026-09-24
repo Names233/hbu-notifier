@@ -4,7 +4,7 @@
 标题取 <a> 文本（或 title 属性），日期从最近的单条目容器文本里用正则提取。
 """
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
 import requests
@@ -40,8 +40,8 @@ class Item:
     date: str
     source: str
     summary: str = ""
-    start: str = ""
-    deadline: str = ""
+    kind: str = ""  # action / event / exam / news
+    timings: list = field(default_factory=list)  # [{"type","time","end?"}]
 
 
 def _to_abs(href: str, page_url: str, base_url: str) -> str:
