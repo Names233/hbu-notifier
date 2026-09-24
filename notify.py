@@ -25,9 +25,11 @@ def md_links_to_text(md: str) -> str:
 
 
 def item_markdown(it) -> str:
+    summary = f"**摘要**：{it.summary}  \n\n" if getattr(it, "summary", "") else ""
     return (
         f"**来源**：{it.source}  \n"
         f"**日期**：{it.date or '未知'}  \n\n"
+        f"{summary}"
         f"[📖 打开原文]({it.url})"
     )
 

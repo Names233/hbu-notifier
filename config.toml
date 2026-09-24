@@ -5,6 +5,17 @@
 state_file = "state.json"
 digest_empty = true # 摘要时段没有新通知时也发一条"无新通知"，用于确认程序活着
 
+# ---- AI 一句话摘要 ----
+# 走 freeshare 中转（OpenAI 兼容端点）。密钥用环境变量 FREESHARE_API_KEY 引用。
+# 该中转站偶发限流/空回复，故配了 fallback_models 回退链，全失败则本条降级为纯链接推送。
+[ai]
+enabled = true
+base_url = "https://freeshare.cc.cd/v1"
+api_key = "$FREESHARE_API_KEY"
+model = "kimi-k3"
+fallback_models = ["glm-5.3-flash", "deepseek-v4.1-flash"]
+max_summary = 60 # 摘要字数上限
+
 # ---- 信息源 ----
 # base_url 用于把页面里的相对链接拼成绝对地址
 [sources.jwc_tzgg]

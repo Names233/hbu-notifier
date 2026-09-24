@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tomllib
 
+import ai
 import notify
 import scraper
 
@@ -113,6 +114,44 @@ def keyword_ok(title: str, include: list, exclude: list) -> bool:
     return not any(k in title for k in exclude)
 
 
+def build_summarizer(cfg: dict):
+    """构建摘要器；未启用或未配置好则返回 None（调用方降级为纯链接推送）。"""
+    sc = cfg.get("ai", {})
+    if not sc.get("enabled", True):
+        print("[信息] AI 摘要已关闭（config.toml 里 [ai].enabled = false）")
+        return None
+    api_key = resolve(sc.get("api_key", "")) or os.environ.get("FREESHARE_API_KEY", "")
+    if not api_key:
+        print("[WARN] 无可用 AI 密钥（缺 FREESHARE_API_KEY），本次不带摘要")
+        return None
+    s = ai.Summarizer(
+        base_url=resolve(sc.get("base_url", "")) or ai.DEFAULT_BASE_URL,
+        api_key=api_key,
+        model=sc.get("model", "") or ai.DEFAULT_MODEL,
+        fallback_models=sc.get("fallback_models") or ai.DEFAULT_FALLBACKS,
+        max_summary=int(sc.get("max_summary", 60)),
+    )
+    print(f"[信息] AI 摘要已启用：{'/'.join(s.models)} @ {s.base_url}")
+    return s
+
+
+def summarize_items(summarizer, items: list) -> None:
+    """就地给每个 item 填 summary。单条失败只记日志，不影响其他条目。"""
+    if summarizer is None:
+        return
+    ok = 0
+    for it in items:
+        try:
+            body = scraper.fetch_article_body(it.url)
+            s = summarizer.summarize(it.title, body)
+            if s:
+                it.summary = s
+                ok += 1
+        except Exception as e:
+            print(f"[WARN] 摘要失败「{it.title[:20]}…」: {e}")
+    print(f"  摘要完成 {ok}/{len(items)} 条")
+
+
 def run_check(cfg, state_path: Path, channels, dry_run=False) -> None:
     state = load_state(state_path)
     first_run = not state["items"]
@@ -132,35 +171,54 @@ def run_check(cfg, state_path: Path, channels, dry_run=False) -> None:
             print(f"[WARN] 源「{s['name']}」解析到 0 条，站点结构可能变化，请检查")
         new = [it for it in items if it.url not in state["items"]]
         print(f"  共 {len(items)} 条，新 {len(new)} 条")
-        for it in new:
-            state["items"][it.url] = {
-                "title": it.title,
-                "source": it.source,
-                "date": it.date,
-                "first_seen": now().isoformat(timespec="seconds"),
-            }
         all_new.extend(new)
 
     flt = cfg.get("filter", {})
     todo = [it for it in all_new if keyword_ok(it.title, flt.get("include_keywords", []), flt.get("exclude_keywords", []))]
 
-    if first_run and todo and not dry_run:
-        print(f"首次运行：{len(todo)} 条已记录为已读，不推送（避免刷屏）")
-        todo = []
+    # 首次运行只为建立基线，不推送也不调用 AI（省额度）
+    if first_run and all_new:
+        print(f"首次运行：{len(all_new)} 条已记录为已读，不推送（避免刷屏）")
+        for it in all_new:
+            state["items"][it.url] = _record(it)
+        if not dry_run:
+            save_state(state_path, state)
+        else:
+            print("[dry-run] 首次运行，仅记录")
+        return
+
+    if todo:
+        summarize_items(build_summarizer(cfg), todo)
+
+    for it in todo:
+        state["items"][it.url] = _record(it)
 
     if dry_run:
         print(f"[dry-run] 候选推送 {len(todo)} 条：")
         for it in todo:
-            print(f"  - 【{it.source}】{it.title} {it.date} {it.url}")
+            extra = f" | 摘要：{it.summary}" if it.summary else ""
+            print(f"  - 【{it.source}】{it.title} {it.date}{extra}")
         return
 
     for it in todo:
+        if it.summary:
+            print(f"  摘要：{it.title[:30]} → {it.summary}")
         channels_send(channels, f"【{it.source}】{it.title}", notify.item_markdown(it))
     save_state(state_path, state)
 
     if failed:
         alert = f"⚠️ hbu-notifier 以下源抓取失败：{'、'.join(failed)}"
         channels_send(channels, alert, alert)
+
+
+def _record(it) -> dict:
+    return {
+        "title": it.title,
+        "source": it.source,
+        "date": it.date,
+        "summary": it.summary,
+        "first_seen": now().isoformat(timespec="seconds"),
+    }
 
 
 def run_digest(cfg, state_path: Path, channels, dry_run=False) -> None:
@@ -174,6 +232,20 @@ def run_digest(cfg, state_path: Path, channels, dry_run=False) -> None:
         if (t := datetime.fromisoformat(v["first_seen"])) and (cutoff is None or t > cutoff)
     )
 
+    # 给缺摘要的条目补一次（例如首次汇总时早于摘要功能上线、或上次摘要失败）
+    missing = [(url, v) for _, url, v in entries if not v.get("summary")]
+    if missing and not dry_run:
+        summarizer = build_summarizer(cfg)
+        if summarizer is not None:
+            print(f"  为 {len(missing)} 条历史记录补摘要")
+            for url, v in missing:
+                try:
+                    body = scraper.fetch_article_body(url)
+                    if s := summarizer.summarize(v["title"], body):
+                        v["summary"] = s
+                except Exception as e:
+                    print(f"[WARN] 补摘要失败「{v['title'][:20]}…」: {e}")
+
     lines = []
     if entries:
         by_source: dict[str, list] = {}
@@ -181,7 +253,12 @@ def run_digest(cfg, state_path: Path, channels, dry_run=False) -> None:
             by_source.setdefault(v["source"], []).append((url, v))
         for src, lst in by_source.items():
             lines.append(f"### {src}（{len(lst)} 条）\n")
-            lines.extend(f"- [{v['title']}]({url})（{v.get('date') or '日期未知'}）" for url, v in lst)
+            for url, v in lst:
+                date = v.get("date") or "日期未知"
+                line = f"- [{v['title']}]({url})（{date}）"
+                if v.get("summary"):
+                    line += f"\n  {v['summary']}"
+                lines.append(line)
             lines.append("")
     elif not cfg.get("general", {}).get("digest_empty", True):
         print("本时段无新通知，且配置为不发空摘要，跳过")
